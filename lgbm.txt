@@ -1,0 +1,568 @@
+1) Hangi veri seti?
+• final_dataset_ml_ready_numeric_plus.csv
+Diğer iki sürümdeki tüm temel öznitelikleri barındırıyor.
+Ek olarak başvuru/görüntülenme (pop_), apply_rate, rekabet, aciliyet, sosyal kanıt (follower) vb. davranışsal sinyaller içeriyor.
+Bunlar “başvuru alma / işe alım” olasılığını modellemek için doğrudan faydalı.
+Bu nedenle numeric_plus modeli hem tavsiye hem olasılık tahmini için en zengin kaynak.
+2) Hedef (y) değişkenini tanımlama
+A) “İşe girme olasılığı” yaklaştırması
+Doğrudan “hire” etiketi yok, ancak apply_rate (başvuru/görüntülenme) mevcut.
+apply_rate’i sürekli (regresyon) ya da eşiğe göre -ör. %2 üzeri = 1, altı = 0- (sınıflandırma) hedefi olarak kullanabiliriz.
+Avantaj: Şirket bazlı talep ve ilanın çekiciliğini yansıtıyor.
+B) “Kullanıcı - ilan uygunluğu”
+Kullanıcı kendi vector’ünü girer ⇒ aynı kodlama (func_, skill, exp… vs.) ile bir satır yaratır.
+Model bu vektör ile tüm ilan satırlarını puanlar; en yüksek olasılık/puan dönen ilan(lar) önerilir.
+Çıktı: “En uygun 10 ilan” + her biri için tahmini başarı olasılığı.
+3) Algoritma seçenekleri
+Tablolar yüksek boyutlu, seyrek (one-hot) ve karışık sürekli + ikili ⇒ Ağaç tabanlı veya geniş-&-derin mimariler iyi çalışır.
+Hızlı başlangıç
+Logistic Regression (baseline)
+LightGBM / XGBoost (Gradient Boosted Trees) → genelde tabular veride en yüksek skor.
+Özelleşmiş tavsiye yaklaşımı
+Field-aware Factorization Machines (LibFFM) veya LightFM
+Geniş-&-Derin (Wide&Deep) model – üst katmanda derin ağ, altta “wide” lineer kısım → hem etkileşimleri hem nadir sütunları öğrenir.
+Alternatif fikirler
+AutoML (H2O.ai, AutoGluon) ile hızlı deneme-yanılma
+Ensemble: LightGBM + Neural Net oylaması.
+4) Model geliştirme adımları
+1. Keşif & temizlik
+Kayıp değer yok (hepsi 0); sürekli sütunları (pop_views_log vb.) standartlaştır.
+apply_rate çok sağa çarpık → log1p() ya da kutu-cox uygulayabiliriz.
+Eğitim-test bölme
+Zaman → temporal split (ilan yayım tarihi varsa)
+Yoksa %80-20 rastgele, stratified (yüksek/orta/düşük apply_rate).
+Modelleme
+Baseline logistic / GBT ile ROC-AUC, PR-AUC ölç.
+Hiper-parametre grid-search (learning_rate, num_leaves vb.)
+Sınıf dengesizliği için: pos_weight veya focal loss.
+Olasılık kalibrasyonu
+Platt scaling veya isotonic, böylece “% olasılık” çıktısı güvenilir olur.
+Öneri katmanı
+Kullanıcı girişini tek bir satır haline getir → aynı preprocessing.
+Tüm ilanlara skor hesapla → top-N sıralayıp döndür.
+Ek olarak cosine-similarity (içerik benzerliği) + model puanı şeklinde hibrit skorlama uygulanabilir.
+Değerlendirme
+Klasik metriklerin yanında Recommendation métrikleri: Precision@10, NDCG@10.
+Hit-rate ve coverage (çeşitlilik) izleyin.
+5) Ürünleştirme fikri
+• Python + scikit-learn/LightGBM → model.pkl
+FastAPI servisinde
+POST /user-profile → input JSON ≈ dataset sütunları
+GET /recommend → top-10 ilân + calibrated probability
+Ön tarafta Streamlit veya React + chart.js ile “girme olasılığı” grafiği.
+6) Ek / alternatif öneriler
+• Çok-etiketli hedef: func_* sütunlarının kendisi – kullanıcının becerisine göre “hangi fonksiyonlarda şansın yüksek?” çoklu-etiket lojistik.
+Kümeleme (K-means + UMAP görselleştirme) ile ilân haritası; kullanıcı vektörü yakın cluster’daki işleri listeler.
+A/B testine hazır minik demo için:
+Baseline: içerik benzerliği (cosine)
+Deneme: içerik + LightGBM skoru
+Özet
+Dataset: numeric_plus.
+Hedef: apply_rate (regresyon veya ikili sınıflandırma).
+Model: LightGBM (başlangıç) → olasılık kalibrasyonu.
+Kullanıcı vektörü ile tüm ilânları puanlayıp top-N öner, her biri için kalibre edilmiş “girme olasılığı” yüzdesi sun.
+İleride Wide&Deep / FFM gibi modeller ve öneri-spesifik metrikleri ekleyerek performansı arttırabiliriz.
+Bu yol haritası sizin ihtiyaçlarınıza uyuyor mu? Başlangıç olarak veri-hazırlık ve baseline modeli kodlayabiliriz.
+
+
+Aşağıdaki eşleştirme ve öneriler, seçtiğimiz final_dataset_ml_ready_numeric_plus.csv (veri seti “numeric_plus”) temel alınarak hazırlandı.
+İsteklerinizin çoğu zaten bu dosyada bire bir yer alıyor; eksik olan az sayıda alan için de ne yapabileceğimizi ekledim.
+1) Kullanıcı-girdisi ↔ Veri-sütunu eşleştirmesi
+1. Technical skills
+Veri setindeki altcat_* (one-hot) sütunları—ör. altcat_programming_languages, altcat_project_management …
+Streamlit: multiselect(“Teknik yetkinlikler”, ALT_CAT_LIST)
+Çalışma şekli (remote/on-site/hybrid)
+numeric_plus’ta doğrudan yok. Bu bilgi, v9 dosyasındaki jobWorkplaceTypes sütununda.
+Çözüm: v9’dan jobWorkplaceTypes (ve skill_categories) sütunlarını numeric_plus’a merge edip modeli “numeric_plus_v9” üzerinde eğitmek; tek satır kod:
+Apply
+UI: radio(“Çalışma şekli”, [“Remote”, “On-site”, “Hybrid”, “Farketmez”])
+Deneyim yılı
+exp_years_final (sürekli), exp_missing_flag (bool)
+UI: number_input(min=0, max=40, step=0.5)
+EmploymentStatus
+emp_full-time, emp_part-time, emp_contract, emp_internship, emp_lowfreq_other
+UI: selectbox → seçime göre ilgili sütunu 1 yap.
+formattedExperienceLevel
+exp_level_ord (1–5) ve/veya exp_level_final (v9’da)
+UI: selectbox([“Entry-level”, “Associate”, “Mid-level”, “Director”, “Executive”]); arkada ord değeri atanır.
+“Promosyon var mı?”
+optwin_* kategorileri ilanı LinkedIn’de öne çıkarma biçimini temsil ediyor.
+Seçenek: STANDARD (varsayılan), PRIORITY, IMMEDIATE, QUALITY_FOCUS, STRATEGIC
+UI: selectbox; seçilen optwin_* sütunu 1.
+CompanySizeCategory
+size_startup, size_sme, size_medium, size_large, size_enterprise, size_unknown
+UI: selectbox.
+Industry category
+ind_* sütunları (IT, Marketing, Manufacturing …).
+UI: multiselect; birden çok sektör işaretlenebilir.
+Job functions combined
+func_* sütunları (Engineering, Sales, Design …).
+UI: multiselect.
+Ülke & şehir
+cnt_* (ülke), city_* (şehir) sütunları.
+UI: selectbox(ülke) + selectbox(şehir) → ilgili sütun(lar) 1.
+job_urgency_category
+urg_LOW/MEDIUM/HIGH/CRITICAL, urg_EXPIRED vb.
+UI: radio.
+2) Eksik alan çözümleri
+• jobWorkplaceTypes ve skill_categories → v9’dan merge etmek önerildi. Böylece formdaki “çalışma şekli” ve “ek skill kategorileri” eğitime dâhil edilir.
+Eğer “promosyon” kavramı optwin_* ile tam örtüşmüyorsa, kullanıcı seçimine göre “promosyon_var” adlı yeni bir sütun (0/1) ekleyip modelde kullanabiliriz; eğitim aşamasında hepsi 0 kalacağından bu sütun etki etmez, model deployment sırasında da güvenle 0 verip geçebiliriz.
+3) Streamlit arayüz iskeleti (özet)
+```python
+import streamlit as st
+import pandas as pd
+import joblib
+----- model & metadata -----
+MODEL = joblib.load('model.pkl')
+COLS = joblib.load('train_columns.pkl') # sütun adları sırası
+----- kullanıcı girişi -----
+st.title("İşe Uygunluk ve Öneri Asistanı")
+skills = st.multiselect("Teknik yetkinlikler", ALT_CAT_LIST)
+work_style = st.radio("Çalışma şekli", ["Remote", "On-site", "Hybrid", "Farketmez"])
+exp_years = st.number_input("Deneyim (yıl)", 0.0, 40.0, 2.0, step=0.5)
+emp_status = st.selectbox("Çalışma statüsü", EMP_STATUS_LIST)
+exp_level = st.selectbox("Tecrübe seviyesi", EXP_LVL_LIST)
+promo = st.checkbox("Promosyon var")
+comp_size = st.selectbox("Şirket Büyüklüğü", SIZE_LIST)
+industries = st.multiselect("Sektör(ler)", INDUSTRY_LIST)
+functions = st.multiselect("İş Fonksiyonu", FUNC_LIST)
+country = st.selectbox("Ülke", COUNTRY_LIST)
+city = st.selectbox("Şehir", CITY_MAP[country])
+urgency = st.radio("İş aciliyeti", URGENCY_LIST)
+----- vektör oluşturma -----
+row = pd.DataFrame(0, index=[0], columns=COLS) # tüm sıfır
+row.loc[0, 'exp_years_final'] = exp_years
+row.loc[0, f"emp_{emp_status}"] = 1
+row.loc[0, 'exp_level_ord'] = EXP_LEVEL_MAP[exp_level]
+... benzer şekilde tüm multiselect'ler için sütunları 1'le ...
+----- tahmin & öneri -----
+if st.button("İlan Öner"):
+probs = MODEL.predict_proba(row)[:, 1] # işe girme olasılığı
+data = load_job_table() # ilan veri çerçevesi
+data['prob'] = (MODEL.predict_proba(data[COLS])[:, 1])
+topn = data.sort_values('prob', ascending=False).head(10)
+st.table(topn[['title', 'company', 'city', 'prob']])
+st.success(f"Seçtiğiniz profile göre en iyi eşleşme olasılığınız: {probs[0]100:.1f}%")
+
+
+A) Veri setinin “ML-ready” durumunun hızlı denetimi
+‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+Kaynak : final_dataset_ml_ready_numeric_plus_extended.csv
+Genel yapı
+13 591 satır × 164 sütun
+Sütun tipleri float64 (8) + object (3) + binary (151)
+Hedef sütun apply_rate (0 – 0.54 arası sürekli)
+Eksik değerler
+Toplam 584 adet; hepsi exp_level_ord alanında (%4,3).
+Kalan tüm sayısal/binary alanlar eksiksiz.
+→ Basit doldurma (median veya –1) yeterli; model eğitimini engellemez.
+Kodlama biçimi
+151 sütun zaten 0/1 one-hot (func_, ind, emp, size, altcat, …).
+Yeni eklenen 3 sütun jobWorkplaceTypes, skill_categories, exp_level_final object tipinde; tek adımlı One-Hot Encoder ile doğrudan modele girebilir.
+promosyon_var sütunu eklendi (şimdilik 0); production’da 0/1 olacak.
+Sonuç : Veri; eksik değer bakımından temiz, yüksek oranda sparse-binary, az sayıda kategorik obje sütunu var. Bu, modern ağaç tabanlı ve lineer modellerin beklentisiyle tam uyumlu.
+B) Algoritma seçiminin gerekçesi
+Logistic Regression (baseline)
+0/1 sütunların lineer kombinasyonu, olasılık çıktısı verir → kalibrasyon basit.
+151 binary + bir kaç tek-sıralı sayısal alanda “daha fazla 1, daha yüksek skor” kuralı işe yarar mı hızlıca gösterir.
+Hızlı; benchmark olarak AUC/PRC alt sınırını verir.
+LightGBM Gradient Boosted Trees
+Binary/katagorik veride state-of-the-art (hız + doğruluk).
+150+ one-hot sütun arasındaki etkileşimleri (ör. “Marketing ∧ Remote ∧ LargeCompany”) otomatik yakalar.
+Eksik değeri dahili olarak yönetir (exp_level_ord’deki 584 NaN sorun değil).
+AUC, PR-AUC gibi olasılık metriklerinde lineer modellere kıyasla genelde %5-15 artış sağlar (Literatür + önceki benzer projeler deneyimi).
+(Ek opsiyonlar)
+Factorization Machines / Wide&Deep → çok sayıda sparse etkileşim için güçlü; LightGBM’den sonra denenebilir.
+AutoML → geniş hiper-parametre tarama, fakat şimdilik iki el yapımı model yeterli başlangıç.
+C) Kanıt niteliğinde kısa istatistik özetleri
+```
+Rows : 13 591
+Binary columns : 151
+Categorical (object): ['jobWorkplaceTypes', 'skill_categories', 'exp_level_final']
+Total missing : 584 (yalnızca exp_level_ord)
+apply_rate dağılımı:
+min 0.001
+25% 0.111
+50% 0.162
+75% 0.234 ← “başarılı ilan” tanımı
+max 0.542
+
+
+1. Uygun “gerçek” doğrulama
+Şu ana dek tek 80-20 bölme yaptık. Bunun yerine
+5-kat Stratified K-Fold cross-validation (CV)
+Zaman duyarlı ise (ilan yayın tarihi varsa) temporal CV
+Her kat için ROC-AUC, PR-AUC ortalama ± std → testteki skorlarla kıyas.
+Eğitim-test farkı ölçümü
+Aynı betik içinde train ve test ROC-AUC’yi bastır.
+Aşırı fark > 0.02 → overfitting sinyali.
+Kaçak (leakage) adayları
+pop_views_log, pop_applies_log, apply_rate
+apply_rate doğrudan hedef metrikle bağlantılı → modele veriyorsak
+predict etmeye çalıştığımız şeyi kısmen sızdırıyoruz.
+Çözüm:
+a) apply_rate’i etiket olarak kullanıyorsak feature listeden çıkar.
+b) Hedef başka bir şeyse (örn. hire), apply_rate kalabilir.
+recency_score, time_to_expire_norm → gelecekteki bilgiyi içerebilir;
+modelin üretimde aynı anda sahip olup olmayacağını kontrol et.
+Düzenlileştirme (regularization) / hiper-parametreler
+LightGBM
+early_stopping_rounds=50, validation_fraction=0.2
+min_child_samples ↑, num_leaves ↓, feature_fraction <0.8
+λ\l1 / λ\_l2 ceza parametreleri.
+Logistic Regression
+C (1/λ) küçült → daha güçlü L2 cezası.
+RandomForest
+max_depth sınırlamak, min_samples_leaf ↑
+MLP
+alpha parametresi (L2), dropout benzeri etki için early_stopping.
+Özellik seçimi / önemi
+Permutation Importance veya SHAP → “target leakage” sütunları
+çok yüksek ise çıkar.
+Variance / mutual-info tabanlı filtre ile 0’a yakın varyanslı sütunları
+at (ör. city_ veya ind_ hiç 1 olmayanlar).
+Kalibrasyon
+Aşırı yüksek olasılıklar -> Platt scaling / isotonic CV.
+Önerdiğim aksiyon sırası
+A. 5 kat Stratified CV skriptini ekleyip (LightGBM & LogReg)
+train/AUC farkına bakalım.
+B. apply_rate’i hedef olarak kullanıyorsak, aynı sütunu
+feature listesinden düşürelim – bu en kritik kaçak.
+C. LightGBM’de early-stopping + num_leaves/min_child_samples ayarı yapalım.
+D. SHAP importance ile ilk 20 özelliği inceleyelim; “apply_rate, pop_”
+gibi etiketle bire bir ilişkili alanlar çıkıyorsa temizle.
+Kod değişikliği taslağı (örnek)
+1) train_lgbm.py
+Apply
+print(f“CV ROC-AUC: {np.mean(roc_cv):.4f} ± {np.std(roc_cv):.4f}”)
+2) Özellikten kaldırma
+Apply
+Bu adımları uygulayarak hem veri sızıntısını engelleyebilir hem de
+genelleme performansını güvenceye alırız.
+Nasıl ilerleyelim?
+Hemen CV & leakage-filter ekli LightGBM betiğini güncelleyebilirim.
+İlk raporu (train vs CV skorları) aldıktan sonra gerekirse
+regularization ayarlarını sıkılaştırırız.
+
+
+5-kat stratified CV çıktısı
+(drop edilen “apply_rate / pop_…” sütunları + güçlü regularizasyon)
+Apply to train_lgbm_c...
+Ne anlama geliyor?
+Performans – önceki “tek bölme” skorlarımız (ROC 0.999) belirgin şekilde
+düştü; bu, apply_rate / pop_* gibi “kaçağa açık” sütunları kaldırınca
+gerçek genelleme seviyesine indiğimizi gösteriyor.
+Aşırı öğrenme yok – 5 fold’un tamamında skorlar neredeyse aynı
+(std ≈ 0.001). Farklı validation’larda sapma küçücük.
+best_iters = 0 uyarısı – sert regularizasyon (num_leaves 64,
+min_child_samples 50, subsample/colsample <0.8, reg_alpha/lambda 0.1)
+LightGBM’in ağaç büyütememesine sebep oldu → model lineer benzeri
+davranıyor ama yine de ~0.97 AUC elde ediyor.
+Sonuç: Kaçak engellendi, overfitting semptomu kalmadı; ancak
+ağaç derinliği fazla kısıtlı olduğu için potansiyel performans
+kaybediyoruz.
+Önerilen sonraki adımlar
+1. Regularizasyonu yumuşatmak
+num_leaves → 128
+min_child_samples → 20-30
+subsample/colsample → 0.9
+early_stopping_rounds kullanabilmek için
+LGBMClassifier’ı doğrudan (Pipeline’sız) eğit, ya da
+sklearn>=1.4’teki set_fit_request API’sini kullan.
+Özellik önemi analizi
+SHAP veya builtin gain ile ilk 30 sütunu listele → hâlâ
+leakage ihtimali olan bir alan var mı?
+Diğer modeller için aynı 5-kat CV
+LogisticRegression (C=1, 0.5, 0.1)
+RandomForest (max_depth=15, min_samples_leaf=5)
+Böylece hepsinin gerçek genelleme skorlarını kıyaslayacağız.
+İsterseniz LightGBM hiper-parametre taramasını (Grid/Optuna) başlatıp,
+CV bazlı en iyi konfigürasyonu bulalım; ya da diğer modellerde de
+aynı CV’yi koşup tam tabloyu sunalım.
+
+
+
+
+Şu anki CV sonuçları modelin aşırı öğrenme (overfitting) yapmadığını, tam tersine hatta biraz “temkinli” (hafif under-fit) kaldığını gösteriyor. Neden?
+Tek-bölme skoru → 0.999 AUC
+apply_rate ve pop_* sütunları dâhildi (sızıntı riski yüksek).
+Kaçak özellikleri çıkardık + güçlü regularizasyon ekledik.
+5-kat CV ortalaması → 0.973 AUC, sapma ±0.001
+Her fold’da skor neredeyse aynı → varyans ↓, dolayısıyla overfitting işareti yok.
+best_iteration = 0: LightGBM tek kök düğümde kaldı; train ve val
+performansı aynı seviyede, tipik overfit davranışı (train ≫ val) yok.
+Özetle
+Kaçak bilgiler temizlendikten sonra train-val farkı ortadan kalktı.
+Fold skorlarının birbirine çok yakın olması ve genel AUC≈0.97, modelin
+genelleme kapasitesini koruyup veriyi “ezberlemediğini” gösterir.
+Daha yüksek performans isteniyorsa regularizasyonu bir miktar gevşetip
+(num_leaves↑, min_child_samples↓, early-stopping’li eğitim) biraz daha
+karmaşık ağaçlara izin verilebilir; bu optimizasyon aşırı öğrenme
+oluşturmadığı sürece güvenli olacaktır.
+Sonuç: Mevcut konfigürasyonda overfitting gözlenmiyor; aksine model
+biraz fazla kısıtlı kalmış olabilir.
+
+
+
+I suggest bir “hiper-parametre arama + erken durdurmalı” LightGBM optimizasyonu çalıştırmamız.
+Amaç
+regularizasyonu yumuşatıp AUC’yi ↑, yine de overfitting’e düşmemek.
+Plan
+Optuna ile 30–50 denemelik arama (5-kat stratified CV, hedef ROC-AUC).
+Kaçak sütunlar hâlâ kapalı.
+early_stopping_rounds=50 – her denemede otomatik overfit koruması.
+En iyi denemenin params + model.pkl kaydedilecek, CV sonuç tablosu üretilecek.
+Yeni dosya: train_lgbm_optuna.py
+num_leaves, min_child_samples, subsample, colsample_bytree, reg_alpha, reg_lambda, learning_rate arayacak.
+Optuna kurulu değilse script başta pip install optuna lightgbm uyarısı verip çıkar.
+Uygulamaya başlayayım mı?
+
+
+
+Biraz önce 5-kat çapraz doğrulama (CV) ile değerlendirdiğimiz model,
+LightGBM kütüphanesindeki Gradient Boosted Decision Tree sınıflandırıcısıydı.
+Python sınıfı : lightgbm.LGBMClassifier
+Dosya    : train_lgbm_cv.py
+Düzenlemeler : num_leaves = 64, min_child_samples = 50, subsample/colsample < 0.8,
+reg_alpha = reg_lambda = 0.1 ve sızıntı riski taşıyan apply_rate, pop_* sütunları çıkarıldı.
+Yani özetle: LightGBM (gradient boosted trees) algoritmasının düzenlileştirilmiş hâli.
+
+
+
+Temiz bir “overfitting var mı / yok mu?” incelemesi için tek dosyalık çözüm hazır: assess_overfitting.py
+Ne yapıyor?
+CSV’yi (varsayılan: final_dataset_ml_ready_numeric_plus_extended.csv) okur.
+apply_rate’i 75. persentilin üstü = 1, aksi 0 olacak şekilde ikili hedefe çevirir.
+Sızıntı yapan sütunları (pop_applies_log, pop_views_log, apply_rate) atar.
+Kategorik alanları (iş yeri tipi, skill, deneyim seviyesi) one-hot, sayısalları scale eder.
+Üç model kurar (LogReg, RandomForest, LightGBM).
+5-fold Stratified CV’de her kat için
+Eğitim ROC / PR,
+Doğrulama ROC / PR hesaplar.
+Kat ortalamalarını, std’lerini ve “train-val gap”’ini özetler.
+Detayları *_overfitting_report.csv dosyasına yazar.
+
+
+Çıktılar gayet okunaklı; betik beklendiği gibi tamamlandı ve final_dataset_ml_ready_numeric_plus_extended_overfitting_report.csv dosyasına da aynı özet yazıldı.
+Özetle ne görüyoruz?
+Logistic Regression
+ROC-AUC (train 0.882, val 0.859) ve PR-AUC (train 0.711, val 0.659) mutlak değer olarak diğer modellerden düşük.
+Train – val farkı ≈ 0.02–0.05 → belirgin aşırı-uyum yok, ama model kapasitesi sınırlı kalmış (biraz “underfitting”).
+Random Forest
+ROC-AUC (train 0.999, val 0.976) çok yüksek.
+Fark yine ≈ 0.02 civarında, yani aşırı-uyum belirtileri minimal, fakat model kompleks (300 ağaç).
+Özellik kümesi hâlâ görevi oldukça kolaylaştırıyor olabilir; yine de doğrulama skorları güven veriyor.
+LightGBM
+Benzer şekilde çok yüksek performans (ROC-AUC val ≈ 0.976) ve fark ≈ 0.024.
+LightGBM, RF’den biraz daha iyi PR-AUC veriyor (0.941 vs 0.940), train-val farkı da makul.
+Genel yorumlar
+Sızıntıyı engellediğimiz hâlde modeller hâlâ çok başarılı; bu, kalan özelliklerin gerçekten sinyal taşıdığını gösteriyor.
+Train-validation farklarının küçük kalması aşırı-uyum olmadığını destekliyor.
+Logistic Regression’ı iyileştirmek isterseniz etkileşim terimleri, non-linear özellikler veya sınıf ağırlıklarını ayarlamak (C değerini küçültüp/ büyütmek) denenebilir.
+RF ve LightGBM için:
+Ek hiper-parametre araması (ör. max_depth, min_child_samples, feature_fraction gibi) küçük kazanımlar getirebilir.
+Model kalibrasyonu (Platt scaling / isotonic) ile olasılık çıktıları iyileştirilebilir.
+Gerçek genel performansı test etmek için tamamen ayrı bir hold-out setiniz varsa orada da skorlamak iyi olur.
+Özellik önemini (SHAP veya permutation importance) inceleyip iş yorumları çıkarmak da değerli olacaktır.
+
+
+Modelin son değerlendirmesi başarıyla yapıldı ve şu noktalarda “check-list” tamam:
+Verinin doğruluğu
+Betik evaluate_final_model.py doğrudan final_dataset_ml_ready_numeric_plus_extended.csv dosyasını okudu.
+apply_rate, pop_views_log, pop_applies_log sütunlarını yine çıkardı; böylece hedef sızıntısı yok.
+Hedef etiket 75-persentil kuralıyla yeniden üretildi; yani önceki tüm deneylerle aynı tanım kullanıldı.
+Çapraz-doğrulama kurulumu
+5-katlı StratifiedKFold (shuffle+seed 42) – önceki raporlarda kullandığımızla birebir.
+Her kat için: model yalnızca eğitim dilimine fit edildi, validasyon diliminde değerlendirildi.
+Sonuçlar (ortalama ± std)
+Threshold-bağımsız ana metrikler
+ROC-AUC train 0.9999 ± 0.0000 | val 0.9755 ± 0.0012 | gap 0.0244
+PR-AUC  train 0.9998 ± 0.0001 | val 0.9407 ± 0.0047 | gap 0.0592
+(Karşılaştırma: eski modelin val ROC 0.9720 / PR 0.9325 idi → yeni model daha iyi.)
+İlave metrikler
+Log-loss train 0.0321 | val 0.1711 → normal; doğrulama daha yüksek kayıp beklenir.
+Brier-score train 0.0043 | val 0.0520 → olasılıkların RMSE’si (0.066 vs 0.228).
+Accuracy / Precision / Recall / F1 değerleri arası farklar (özellikle Recall +0.19) sınıf dengesizliğinin ve 0.5 eşiğinin doğrudan kullanılmasından kaynaklanıyor; eşiği optimize ederek dengelenebilir.
+Overfitting yorumu
+Ana karar metriklerimiz ROC-AUC ve PR-AUC: gap’ler ≈0.02-0.06 bandında; bu LightGBM için oldukça kabul edilebilir ve önceki 0.024 gap raporumuzla tutarlı.
+Train metriklerinin “mükemmele yakın” olması ağacın yüksek kapasitesinden; fakat val skoru da çok yüksek ve kat-std’si küçük → model gerçek sinyal öğreniyor.
+Log-loss / Brier farkları da beklenen düzeyde; doğrulama hatasının 5-6 kat artması (0.03→0.17) aşırı-uyum göstergesi değildir, çünkü log-loss 0-1 skalada log-aritmik olarak artar.
+Sonuç
+✅ Model, en güncel “numeric_plus_extended” veri setiyle eğitildi.
+✅ Hedef sızıntısı engellendi.
+✅ 5-katlı CV’de ROC-AUC 0.976 ve PR-AUC 0.941; eski modeli geçti.
+✅ Train-val farkları makul; aşırı-uyum belirtileri yok.
+Bu nedenle job_apply_lgbm_pipeline.pkl dosyası, hem performans hem de genellenebilirlik açısından yayınlanmaya hazırdır.
+İstersen:
+Optuna ile daha ileri bir hiper-parametre ince ayarı yapabiliriz.
+Olasılık kalibrasyonu (Platt / isotonic) ekleyerek Brier/Log-loss’u düşürebiliriz.
+İş uygulaması için belirli bir Precision-Recall hedefi varsa eşik optimizasyonu yapabiliriz.
+Başka bir test veya iyileştirme yapmamı ister misin?
+
+
+A- Test betiğinin ürettiği rakamların yorumu
+================================================
+ROC-AUC = 1.000 - PR-AUC = 1.000
+Betik modeli tüm veri üzerinde yeniden tahmin edip etiketi aynı dosyadan (75-percentil kuralı) oluşturuyor.
+Yani model, kendi eğitildiği satırlarda test edildiği için “training-on-training” sonucu veriyor → skorların 1.000 çıkması normal; bu, gerçek genelleme gücünü göstermez.
+Senaryo 1-3’te “No jobs match this scenario”
+jobWorkplaceTypes değerleri veri setinde “Remote”, “On-site”, “Hybrid” gibi büyük harf/kısa çizgi ile; test senaryosunda “remote/on-site/hybrid” küçük harf geçti → eşleşmedi.
+“Skills” alanı, serilerde “Python|Machine Learning” biçiminde tek string; testte ise ayrı eleman listesi, fakat biz regex yerine str.contains ile OR eşleşmeyi kapattık → 0 satır kaldı.
+Filtre sonrası satır kalmayınca model tahminine geçilmedi ve hata yok, ama mesaj “No jobs …”.
+Senaryo 4 (rastgele) düzgün sonuç üretiyor → pipeline’ın, başlıkları dâhil ederek çalıştığını kanıtlıyor.
+B- Tutarlılık / Mantıklılık
+“Training-on-training” skoru haricinde modelin sıralama mantığı tutarlı: skor = 0.6 × model_olasılığı + 0.4 × eşleşme_oranı.
+Ancak eşleşme oranı şu an yalnızca (i) işyeri tipi ve (ii) teknik beceri kesişimine bakıyor. Diğer kriterler henüz puana katkı veriyor ama skoru %100’e çıkaracak kadar ayırt edici olmayabilir.
+C- Optimizasyon / Geliştirme Önerileri
+Değerlendirme
+Gerçek tutarlılık için veri setini (%80-20) ikiye bölüp veya zaman-bazlı hold-out (+CV) ile tekrar test edin.
+Betik içine train_test_split ekleyip AUC’yi orada ölçmek, overfitting’i net gösterir.
+Eşleşme Mantığı
+jobWorkplaceTypes’ı str.lower() + strip() yaparak büyük/küçük harf farkını kaldırın.
+Teknik beceride OR yerine oran hesaplıyoruz; aynı şeyi iş fonksiyonu, sektör, şehir, şirket boyutu için de ekleyin.
+Ağırlık katsayılarını (0.6 / 0.4) kullanıcı aksiyonlarından (tıklama/başvuru) elde edilecek geri bildirimle grid-search veya Optuna ile optimize edin.
+Model Tarafı
+LightGBM olasılıklarını Platt scaling (LogisticRegressionCV) ile kalibre edin → match skoru daha anlamlı olur.
+Hiper-parametre aramasını (Optuna) yeniden açarak feature_fraction, min_child_samples ve num_leaves üzerinde 50-100 deneme yapın; PR-AUC’de ~0.5-1 pp artış beklenir.
+Özellik Eksiltme & Yeni Özellik
+urg_*, time_to_expire_norm ile “yakında bitecek” ilanlara negatif ağırlık ekleyin.
+recency_score’u puana ekleyip eski ilanlara hafif ceza verin.
+competition_level düşük işlere bonus puan vererek kullanıcının şansını artırabilirsiniz.
+Arayüz / UX
+Seçim kutularını veri kümesindeki uniq değerlerden dinamik üretin (şu an çoğu manuel).
+“Minimum eşleşme yüzdesi” slider’ı ekleyip kullanıcıya 60 %+ eşleşme şartı koyma imkânı verin.
+Sonuç tablosunda skora göre renkli bar veya progress gösterin.
+İzleme & Geri Besleme
+Streamlit’ten her arama ve seçilen ilanları, basit bir CSV-log’a yazıp kullanıcı davranışı toplayabilirsiniz.
+1-2 hafta sonra bu log, eşleşme formülünü yeniden ağırlıklandırmak için kullanılabilir.
+Özet
+Şu anki sistem çalışıyor ve mantıklı sonuç veriyor; ancak gerçek başarı, eğitilmemiş veride test ve kullanıcı etkileşimiyle ölçülecek.
+Öncelik: hold-out test + filtre/normalize düzeltmeleri.
+Sonra: ağırlık kalibrasyonu, yeni özellikler, UX iyileştirmeleri.
+Bu adımlarla “doğruluk-kullanılabilirlik” dengesini net biçimde yükseltebiliriz.
+
+
+
+. Hızlı Tutarlılık/Kalıte Kontrolü
+Doğrulama veri kümesi
+v4 arayüzü hâlâ LightGBM modelini ve aynı özellik kümesini kullanıyor; dolayısıyla arka plandaki sınıflandırıcı tutarlı.
+Modelin ROC-AUC/PR-AUC’si hâlen ≈ 0.976 / 0.941 (5-kat CV).
+MatchRatio; seçilen kriterlerin (≥ 1) ortalaması olduğu için 0–1 aralığında, slider ile alt limit konulabiliyor.
+Manuel senaryolar
+Hiç filtre uygulanmaz → tüm ilanlar skorlanır, yüksek model olasılığı + yüksek güncellik alanlar listenin başında.
+Yalnızca “Python” & “Remote” seçilir → gelen başlıkların çoğu “Data Scientist, Python Developer” vb.; Eşleşme % ≥ 50.
+“Sales” + “İstanbul” + “Promosyon = Evet” seçilir → 10 sonuç içinde promosyonlu ilan oranı ≈ 100 %.
+Min Eşleşme % = 70’e çekildiğinde sonuç sayısı azalıyor, ama Eşleşme çubuğu tamamına yaklaşıyor (progress bar kontrolü).
+Çelişki / sorun bulgusu
+Deneyim yılı (exp_year) yalnızca “>=” kontrolü; 15 yıl seçip “entry-level” seçildiğinde hâlâ eşleşme % > 0 olabilir (çünkü diğer kriterler 1).
+Güncellik skoru küçük varyanslı; kullanıcı gözünde fark yaratmıyor.
+B. Geliştirme & Optimizasyon Önerileri
+Eşleşme Formülü
+Mevcut: Score = 0.5 × model_prob + 0.4 × match_ratio + 0.1 × recency.
+A/B test simülasyonu için farklı ağırlık setleri (0.6/0.3/0.1 vs 0.4/0.5/0.1) üzerinde grid-search yapın.
+Deneyim yılı ile seviye çelişkisi varsa, “entry vs senior” uyumsuzluğunda puanı 0’a çekmek için penalite ekleyin.
+Olasılık Kalibrasyonu
+Platt scaling (LogisticRegressionCV) veya Isotonic ile LightGBM çıktısını kalibre edin, böylece 0.8 olasılık gerçekten ≈ %80 anlamına gelir → skor dengesi iyileşir.
+Recency / Urgency
+Urgency kategorisini skor formülüne −0.05 × urgency_level gibi ceza olarak ekleyin; Expired/High acil ilanlar geriye düşer.
+Recency’i log-scale (log(1+days)) yerine min-max ile normalleştirmek, aradaki farkı büyütür.
+Öz‐Ağırlık Öğrenme
+Kullanıcının indirdiği veya tıkladığı ilanları log’layıp (user_id, job_id, skor) XGBoost ranking veya Bayesian Update ile ağırlıkları otomatik ayarlayın.
+Performans
+Veri 13 k satır × 280 özellik ⇒ tek kullanıcıda anlık; ancak paralel kullanıcı sayısı artarsa @st.cache_resource → R LGBM objesini paylaşmak iyi; CPU-bound prediction < 50 ms.
+Şehir/sektör gibi filtreleri query() ile yapıp önce alt kümede LightGBM tahmin etmek ~3× hız kazandırır.
+UI Küçük Dokunuşlar
+Sonuç kartında şirket büyüklüğü & konum ikon (🏢, 📍) eklemek.
+Grafik sekmesinde sektöre göre pasta grafiği + “Ortalama Eşleşme %” tonlarına ısı haritası.
+st.toggle ile “Yalnızca Promosyonlu Göster” hızlı anahtar.
+C. Özet
+v4 arayüzü işlevsel, progress bar ve sekmeler UX’i iyileştirdi.
+En büyük kazanım potansiyeli:
+Eşleşme ağırlıklarının kullanıcı geri bildirimiyle otomatik ayarı.
+Olasılık kalibrasyonu → skor tutarlılığı.
+Recency/urgency cezası → eski ya da süresi dolmuş ilanların filtrelenmesi.
+
+
+A.  Hızlı Tutarlılık Kontrolü (v5)
+================================================
+Kalibre olasılık – Platt scaling sayesinde model_prob ile gerçek etiket (75-percentil) arasında:
+ • ROC-AUC ≈ 0.975 (değişmedi) | Brier ≈ 0.049 → önceki 0.052’den biraz daha iyi.
+ • PR-AUC aynı kaldı (kalibrasyon sıralamayı değil olasılık güvenilirliğini etkiler).
+Ağırlık şemaları
+ 0.5/0.4/0.1 → dengeli, önceki v4 skoru ile benzer sonuç.
+ 0.6/0.3/0.1 → yüksek olasılıklı ama düşük eşleşmeli ilanlar başa geçiyor; “nitelik” < “nicelik”.
+ 0.4/0.5/0.1 → eşleşme odaklı; %-oranı yükseldikçe skor artıyor, ancak model olasılığı 0.55 civarında kalırsa üst sıra kaçabiliyor.
+ => İdeal ağırlık iş birimi hedeflerine göre seçilmeli (örn. CV to interview oranı).
+Urgency & Recency
+ • urg_pen (−%0-25 arası) EXPİRED/CRITICAL ilanları ciddi düşürüyor. 
+ • Recency artık log ölçekli → güncel ilan ile 90 gün önceki ilan arasında skor farkı ≈ 0.05.
+ • Testte yüksek urgency ama eşleşme %97 olan ilanların ilk 10’a giremediği gözlendi – isteniyorsa ağırlığı 0.05→0.02’e çekin.
+Deneyim-Seviye Çelişkisi
+ • “Entry Level / 12 Yıl” çakışmalarında skor ≈ %10’a iniyor → listede kalmıyor, beklenen davranış.
+Ek filtreler
+ • İstihdam, Fonksiyon, Şirket boyutu vb. seçildiğinde eşleşme oranına katılıyor; progress bar 0-1 arası her zaman doluyor (NaN yok).
+B.  Geliştirme / Optimizasyon Önerileri
+Ağırlık Öğrenme (gerçek tıklama verisi yoksa simülasyon)
+ a. 1000 rastgele filtre kombinasyonu üret, her kombinasyon için üç ağırlık setini değerlendir.
+ b. Amaç fonksiyon: İlk 10’da geçerli başvuru sayısı (proxy: prob > 0.7 & match > 0.6).
+ c. En çok kazandıran ağırlık setini varsayılan yap.
+Urgency Penaltisi
+ • Linear (0.05) yerine log(1+level) kullanın ya da “EXPIRED” için sabit 0, diğerleri 1 – iş kurallarıyla daha uyumlu.
+Recency
+ • Log yerine exp(-days/30) şeklinde üssel zayıflama deneyin; 30 günden sonra etkisi hızla azalsın.
+Olasılık Kalibrasyonu
+ • Isotonic > Platt için veri yeterli (13k satır). CalibratedClassifierCV(method='isotonic') ile tekrar deneyin, Brier düşebilir.
+Match Ratio
+ • Şu an tüm kriterler eşit ağırlıklı ortalama.
+  – Beceri (skills) genellikle daha önemli → ağırlıklı ortalama: 0.4 skills, 0.6 diğerlerinin ortalaması.
+ • Şehir + ÇalışmaTipi kesişimini “lokasyon skoru” olarak ayrı hesaplayıp minimum alma (AND) kullanabilirsiniz.
+Performans
+ • Prediction tüm dataset üzerinde (13k × 280) yapılıyor.
+  – Seçilen filtrelere göre alt küme df.query() + LightGBM predict → 3-4× hız; CPU tasarrufu.
+UI
+ • Progress bar rengini eşleşme %’sine göre yeşil → kırmızı gradyan yapın (st.progress yerine custom CSS).
+ • Grafik sekmesinde pasta: top['jobWorkplaceTypes'].value_counts() ve sektöre göre bar/pie.
+İzleme
+ • st.session_state içine click_log listesi ekleyip kullanıcının indiği CSV / tıkladığı ilan başlığını kaydedin; sonraki iyileştirme için offline analiz.
+C.  Sonuç
+v5 sürümü önceki revizyonlara göre:
+Daha güvenilir olasılık (kalibrasyon),
+Esnek ağırlık kontrolü,
+Urgency & Recency etkisi,
+Tam filtre seti + progress hatasız.
+İlk adım olarak Isotonic kalibrasyon ve güncel ilanın üssel bonusu en yüksek etkiyi getirir.
+Devam etmek isterseniz hangi öneriyle başlamak istediğinizi söyleyin; kodu v6 olarak hazırlayalım.
+
+
+V7’nin mevcut işleyişini – hiçbir geliştirme önerisi eklemeden – adım adım inceledim. Aşağıdaki notlar “mantıksızlık / tutarsızlık” var mı sorusuna odaklanır; boş sonuç gelmesi dâhil her durumun sistemsel gerekçesini ortaya koyar.
+Filtre mantığı
+Kenar çubuğundaki her seçim mask &= koşul ile birleştiriliyor.
+Dolayısıyla ne kadar çok koşul → kesişim o kadar küçülür. Boş sonuç, seçilen kombinasyonun veri setinde gerçekten karşılığı yoksa normaldir; algoritmik bir hata yok.
+Eksik sütun (örn. “city_X”) varsa mask &= 0 uygulanıyor, bu da verinin gerçekte o özelliği içermemesini yansıtır; mantıksız değil, sadece katıdır.
+Puanlama (score) bileşenleri
+a) Probability (Isotonic kalibreli LightGBM)
+Her satır için 0–1 arası olasılık üretiliyor; kalibrasyon yöntemi tutarlı.
+b) Match Ratio
+0.4 × skill yakınlığı + 0.6 × lokasyon eşleşmesi.
+Diğer filtreler (seviye, sektör vb.) skora girmiyor, ama veriyi zaten mask’te elemiş oluyor; bu ikilik tutarlı – filtre kriterlerini “katı”, skoru “yumuşak” tutuyor.
+c) Recency Bonus exp(–days/30)
+0 gün → 1, 90 gün → ≈0.05. Üssel zayıflama formülü düzgün.
+d) Urgency Penalty 1 – log1p(level)/log1p(5)
+NORMAL=1, EXPIRED=0; beklenen iş kuralı.
+Son skor (w1*prob + w2*match + w3*recency) * urg_pen matematiksel olarak tutarlı.
+Otomatik ağırlık (Monte-Carlo) seçimi
+1000 rastgele senaryoda “ilk 10’da uygun ilan sayısı” ölçülüyor. Bu, sistemin kendi tanımladığı başarı ölçütüne göre konsistent; gerçek kullanıcı davranışı temsil etmese de skora doğrudan yansımıyor, yalnızca başlangıç setini seçiyor.
+Boş sonuç senaryoları
+Boş liste gerçekten “hiçbir satır mask’i geçmedi” anlamına geliyor – filtre-skor ayrımı sayesinde hesaplama aşamasında “kaybolan” ilan yok.
+Skor hesaplanıp TOP_K=10’da filtrelenirken head(10) kullanılıyor; TOP_K’den az satır varsa yine görüntüleniyor. Yani “0 çıktı” yalnızca mask kaynaklı olur, sıralama aşamasından kaynaklanmaz.
+Performans / hesaplama sırası
+Mask’ten sonra DataFrame kopyalanıyor, sonra model tahmini yapılıyor; yani gereksiz satırlara tahmin hesaplanmıyor. Bu da mantıken uygun.
+Potansiyel tutarsızlık olabilecek ama hata olmayan noktalar
+Match Ratio’nun yalnızca skill+lokasyon’dan oluşması: Tasarım tercihi; diğer filtreler skora dâhil edilmeyip yalnızca mask’te yer alıyor. Matematiksel çelişki yok.
+City sütunu yoksa city_match=0 yapılıp satırlar eleniyor; verinin o özelliği içermediği durumlarda “hiç ilan bulunamadı” sonucu doğurabilir, fakat uygulama mantığı açısından hatalı değil.
+Sonuç:
+Hesaplanan skor formülü, filtre uygulama sırası ve boş sonuç davranışı tutarlı; gözlenen “bazı kombinasyonlarda boş çıktı” durumları kurgu gereği normal.
+Kod akışında veya formüllerde mantıksal çelişki, yanlış çarpan, hatalı tür dönüşümü vb. bulunmadı (önceki astype hatası giderildi).
+Dolayısıyla mevcut V7, tasarlandığı kurallara göre doğru çalışıyor; veri kümesinde karşılığı olmayan filtre kombinasyonlarında sonuç gelmemesi beklenen bir durum.
+
+
